@@ -11,6 +11,10 @@ Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
+Parameter ident : Set. 
+Parameter ident_eqMixin : Equality.mixin_of ident. 
+Canonical ident_eqType := EqType ident ident_eqMixin.
+
 Section extra_nat.
 
 Lemma ltn_gtF m n : m < n -> n < m = false.
@@ -70,28 +74,32 @@ Inductive term : Set :=
   | Srt : sort -> term
   | Evar : nat -> list term -> term
   | Op : op -> term -> term -> term
-  | Ref : nat -> term.
+  | Bnd : nat -> term
+  | Ref : ident -> term.
+
 
 Coercion Op : op >-> Funclass.
 
 Fixpoint depth (t : term) :=  match t with
-    | Srt _ | Ref _ => 0
+    | Srt _ | Bnd _ | Ref _ => 0
     | Op _ u v => (maxn (depth u) (depth v)).+1
     | Evar _ l => (foldr maxn 0 (map depth l)).+1
   end.
 
-Fixpoint term_encode (t : term) : GenTree.tree (sort + nat) :=
+Fixpoint term_encode (t : term) : GenTree.tree (sort + nat + ident) :=
   match t with
-    | Srt s => GenTree.Leaf (inl s)
-    | Ref n => GenTree.Leaf (inr n)
+    | Srt s => GenTree.Leaf (inl (inl s))
+    | Bnd n => GenTree.Leaf (inl (inr n))
+    | Ref i => GenTree.Leaf (inr i)
     | Op b t u => 
       GenTree.Node (op_encode b) [:: term_encode t; term_encode u]
     | Evar n l => GenTree.Node n.+3 (map term_encode l) 
   end.
 
-Fixpoint term_decode (t : GenTree.tree (sort + nat)) : term :=
+Fixpoint term_decode (t : GenTree.tree (sort + nat + ident)) : term :=
   match t with
-    | GenTree.Leaf (inl s) => Srt s
+    | GenTree.Leaf (inl (inl s)) => Srt s
+    | GenTree.Leaf (inl (inr n)) => Bnd n
     | GenTree.Leaf (inr n) => Ref n
     | GenTree.Node n.+3 l => Evar n (map term_decode l)
     | GenTree.Node n [:: t; u] =>
@@ -102,7 +110,7 @@ Fixpoint term_decode (t : GenTree.tree (sort + nat)) : term :=
 Lemma term_codeK : cancel term_encode term_decode.
 Proof.
 move=> t; elim: (depth t) {-2}t (leqnn (depth t)) =>
-  [|d IHd] {t} [s|id l|b t u|n] //=; rewrite ?ltnS.
+  [|d IHd] {t} [s|id l|b t u|n|i] //=; rewrite ?ltnS.
   by elim: l=> //= t l IHl /=; rewrite geq_max => /andP [/IHd-> /IHl [->]].
 by rewrite ?geq_max => /andP [/IHd-> /IHd->]; case: b.
 Qed.
@@ -115,11 +123,12 @@ Lemma term_rectl (P : term -> Type) :
 (forall (b : op) (t u : term), P t -> P u -> P (b t u)) ->
 (forall (n : nat) (l : seq term), 
    (forall t, t \in l -> P t) ->  P (Evar n l)) ->
-(forall n : nat, P (Ref n)) ->
+(forall n : nat, P (Bnd n)) ->
+(forall i : ident, P (Ref i)) ->
  forall t : term, P t.
 Proof.
-move=> Ps Pb PEvar Pn t.
-elim: (depth t) {-2}t (leqnn (depth t)) => [|d IHd] {t} [s|id l|b t u|n] //=.
+move=> Ps Pb PEvar Pn Pi t.
+elim: (depth t) {-2}t (leqnn (depth t)) => [|d IHd] {t} [s|id l|b t u|n|i] //=.
   rewrite ltnS => Pl; apply: PEvar; elim: l Pl => [|t l IHl] //=.
   rewrite geq_max => /andP [/IHd Pt /IHl Pl] u.
   by rewrite in_cons; case: eqP => [->|_ /Pl].
@@ -130,7 +139,8 @@ Qed.
 Fixpoint lift_rec (n : nat) (t : term) (k : nat) {struct t} : term :=
   match t with
   | Srt s => Srt s
-  | Ref i => Ref (if k <= i then n + i else i)
+  | Bnd i => Bnd (if k <= i then n + i else i)
+  | Ref n => t
   | Op b t u => b (lift_rec n t k) (lift_rec n u (is_abs b + k))
   | Evar id l => Evar id (map (fun A => lift_rec n A k) l)
   end.
@@ -139,11 +149,12 @@ Definition lift n t := lift_rec n t 0.
 
 Fixpoint subst_rec (N M : term) (k : nat) {struct M} : term :=
   match M with
-  | Srt s => Srt s
-  | Ref i =>
-      if i < k then Ref i
+  | Srt s => M
+  | Bnd i =>
+      if i < k then M
       else if k == i then lift k N
-      else Ref (i.-1)
+      else Bnd (i.-1)
+  | Ref i => M
   | Op b t u => b (subst_rec N t k) (subst_rec N u (is_abs b + k))
   | Evar n l => Evar n [seq subst_rec N U k | U <- l]
   end.
@@ -185,7 +196,7 @@ Inductive par1 : term -> term -> Prop :=
   | par1_beta M M' N N' T : par1 M M' -> par1 N N' -> 
                            par1 (App (Abs T M) N) (subst N' M')
   | par1_sort s : par1 (Srt s) (Srt s)
-  | par1_ref n : par1 (Ref n) (Ref n)
+  | par1_ref n : par1 (Bnd n) (Bnd n)
   | par1_op (b : op) M M' T T' :  par1 M M' -> par1 T T' ->
                                   par1 (b T M) (b T' M').
 
@@ -219,19 +230,19 @@ case: t => //= n; first by left.
 by case: ltngtP => // -> /inv_lift_sort; right.
 Qed.
 
-Lemma lift_ref_ge k n p : p <= n -> lift_rec k (Ref n) p = Ref (k + n).
+Lemma lift_ref_ge k n p : p <= n -> lift_rec k (Bnd n) p = Bnd (k + n).
 Proof. by move=> /= ->. Qed.
 
-Lemma lift_ref_lt k n p : p > n -> lift_rec k (Ref n) p = Ref n.
+Lemma lift_ref_lt k n p : p > n -> lift_rec k (Bnd n) p = Bnd n.
 Proof. by move=> /=; case: leqP. Qed.
 
-Lemma subst_ref_lt u n k : k > n -> subst_rec u (Ref n) k = Ref n.
+Lemma subst_ref_lt u n k : k > n -> subst_rec u (Bnd n) k = Bnd n.
 Proof. by move=> /=; case: ltngtP. Qed.
 
-Lemma subst_ref_gt u n k : n > k -> subst_rec u (Ref n) k = Ref (n.-1).
+Lemma subst_ref_gt u n k : n > k -> subst_rec u (Bnd n) k = Bnd (n.-1).
 Proof. by move=> /=; case: ltngtP. Qed.
 
-Lemma subst_ref_eq u n : subst_rec u (Ref n) n = lift n u.
+Lemma subst_ref_eq u n : subst_rec u (Bnd n) n = lift n u.
 Proof. by rewrite /= ltnn eqxx. Qed.
 
 Lemma lift_rec0 M k : lift_rec 0 M k = M.
@@ -400,6 +411,8 @@ Qed.
 Hint Resolve red1_lift: coc.
 
 (* Cyril: I stopped here *)
+
+(*
 
 Lemma red1_subst_r :
   forall a t u,
@@ -748,3 +761,4 @@ apply H2 with (subst T y); auto with coc.
 rewrite H3.
 unfold subst in |- *; auto with coc.
 Qed.
+*)

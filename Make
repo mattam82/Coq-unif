@@ -1,0 +1,6 @@
+-I ssreflect/src/ -R ssreflect/theories/ Ssreflect -I theories
+theories/prelude.v
+theories/ordtype.v
+theories/finmap.v
+theories/TermEvar.v
+theories/Typing.v
