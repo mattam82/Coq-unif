@@ -1,0 +1,10 @@
+* Features
+
+- α-equality
+- pattern unification (no pruning)
+- β-reduction (data types as impredicative encoding)
+- δ-expansion (of named variables in the context, modeling constants)
+- η-expansion
+- Σ-type lowering ?
+
+- higher-order heuristics (?X p = P -> find occurrences of p in P using α-equality).
