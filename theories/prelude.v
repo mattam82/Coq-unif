@@ -170,7 +170,6 @@ Qed.
 Section Coercions2.
 Variable (T : Type -> Type -> Type).
 
-Program
 Definition coerce2 A1 A2 B1 B2 (x : T A1 A2) : 
              (A1, A2) = (B1, B2) -> T B1 B2.
 Proof. by move=> [<- <-]; exact: x. Defined.

@@ -1,705 +1,869 @@
-Require Import ssreflect ssrbool ssrnat eqtype ssrfun seq path fintype ordtype.
-Require Import prelude.
+(* Authors: Beta Ziliani and Cyril Cohen *)
+Require Import ssreflect ssrbool ssrnat eqtype ssrfun seq path.
+Require Import fintype ordtype bigop.
+
+(****************************************************************************)
+(* This file provides a representation of finitely supported maps where     *)
+(* the keys K lie in an ordType and the values V in an arbitrary type.      *)
+(*                                                                          *)
+(*   {fmap K -> V} == finitely supported maps from K to V.                  *)
+(*        {fset K} := {fmap K -> unit}                                      *)
+(*                 == finite sets of elements of K                          *)
+(*                                                                          *)
+(*          keys f == list of keys of f                                     *)
+(*          domf f == finite set ({fset K}) of keys of f                    *)
+(*         k \in f == k is a key of f                                       *)
+(*          [fmap] == the empty finite map                                  *)
+(*        [fset k] == the singleton finite set {k}                          *)
+(*      f.[k <- v] == f extended with the mapping k -> v                    *)
+(*          s.[+k] == the set s extended with k                             *)
+(*          f.[~k] == f where the key k has been removed                    *)
+(*      f.[k | v0] == returns v      if k maps to v, otherwise v0           *)
+(*           f.[k] == returns Some v if k maps to v, otherwise None         *)
+(*          f ++ g == concatenation of f and g,                             *)
+(*                    the keys of g override those of f                     *)
+(*         f :~: g == f and g have disjoint sets of keys                    *)
+(*                                                                          *)
+(*      [fmap i in ks => E] == builds a finite map using E with keys ks     *)
+(* [fmap g i v | i, v <- f] == builds a finite map from f by composing with *)
+(*                             a function g : K -> V -> V'                  *)
+(****************************************************************************)
+
 Set Implicit Arguments.
 Unset Strict Implicit.
 Import Prenex Implicits.
 
-Section Def. 
-Variables (K : ordType) (V : Type).  
+Import Order.Theory.
+Local Open Scope order_scope.
+
+Reserved Notation "{fmap T }" (at level 0, format "{fmap  T }").
+Reserved Notation "{fset K }" (at level 0, format "{fset  K }").
+Reserved Notation "x .[ k <- v ]"
+  (at level 2, k at level 200, v at level 200, format "x .[ k  <-  v ]").
+Reserved Notation "x .[~ k ]" (at level 2, k at level 200, format "x .[~  k ]").
+Reserved Notation "x .[+ k ]" (at level 2, k at level 200, format "x .[+  k ]").
+Reserved Notation "x .[ k | v ]"
+  (at level 2, k at level 200, v at level 200, format "x .[ k  |  v ]").
+Reserved Infix ":~:" (at level 52).
+Reserved Notation "[ 'fset' k ]" (at level 0, k at level 99, format "[ 'fset'  k ]").
+
+Reserved Notation "[ 'fmap' E | k , v <- s ]"
+  (at level 0, E at level 99, k ident, v ident,
+   format "[ '[hv' 'fmap'  E '/ '  |  k ,  v  <-  s ] ']'").
+Reserved Notation "[ 'fmap' E | v <- s ]"
+  (at level 0, E at level 99, v ident,
+   format "[ '[hv' 'fmap'  E '/ '  |  v  <-  s ] ']'").
+
+Reserved Notation "[ 'fmap' x 'in' A => E ]"
+   (at level 0, E, x at level 99,
+   format "[ '[hv' 'fmap'  x  'in'  A  =>  '/' E ] ']'").
+
+Section extra.
+
+Lemma mem_remF (T : eqType) (s : seq T) x : uniq s -> x \in rem x s = false.
+Proof. by move=> us; rewrite mem_rem_uniq // inE eqxx. Qed.
+
+End extra.
+
+Section Def.
+Variables (K : ordType) (V : Type).
 
 Definition key (x : K * V) := x.1.
 Definition value (x : K * V) := x.2.
-Definition predk k := preim key (pred1 k).  
-Definition predCk k := preim key (predC1 k).
+Notation keys := (map key).
+Notation values := (map value).
 
 Structure finMap : Type := FinMap {
-  seq_of : seq (K * V); 
-  _ : sorted ord (map key seq_of)}.
+  seq_of :> seq (K * V);
+  _ : sorted Order.lt (keys seq_of)}.
 
-Definition finMap_for of phant (K -> V) := finMap.
-
-Identity Coercion finMap_for_finMap : finMap_for >-> finMap.
+Definition finmap_of (_ : phant (K -> V)) := finMap.
 End Def.
 
-Notation "{ 'finMap' fT }" := (finMap_for (Phant fT))
-  (at level 0, format "{ 'finMap'  '[hv' fT ']' }") : type_scope.
+Prenex Implicits key value.
 
-Prenex Implicits key value predk predCk seq_of.
+Notation keys := (map key).
+Notation values := (map value).
+Notation "{fmap T }" := (@finmap_of _ _ (Phant T)) : type_scope.
+Notation "{fset K }" := {fmap K -> unit} : type_scope.
 
-Section Ops.     
+Definition pred_of_finmap (K : ordType) (V : Type)
+  (f : {fmap K -> V}) : pred K := mem (keys f).
+Canonical finMapPredType (K : ordType) (V : Type) :=
+  Eval hnf in mkPredType (@pred_of_finmap K V).
+
+Section Basics.
 Variables (K : ordType) (V : Type).
-Notation fmap := (finMap K V). 
-Notation key := (@key K V). 
-Notation predk := (@predk K V).
-Notation predCk := (@predCk K V). 
 
-Lemma fmapE (s1 s2 : fmap) : s1 = s2 <-> seq_of s1 = seq_of s2.
+Lemma keys_sorted (f : {fmap K -> V}) : sorted <%ord (keys f).
+Proof. by case: f. Qed.
+
+End Basics.
+Hint Resolve keys_sorted.
+
+Section Ops.
+
+Variables (K : ordType).
+
+Lemma nil_sorted V : sorted <%ord (map (@key K V) [::]). Proof. by []. Qed.
+Definition nilf V := FinMap (@nil_sorted V).
+
+Definition fmap_subproof V (ks : seq K) (f : K -> V) :
+  sorted <%ord (keys [seq (k, f k) | k <- sort <=%ord (undup ks)]).
 Proof.
-split=>[->|] //.
-move: s1 s2 => [s1 H1] [s2 H2] /= H.
-by rewrite H in H1 H2 *; rewrite (bool_irrelevance H1 H2).
-Qed.   
+rewrite -map_comp (@eq_map _ _ _ id) // map_id.
+by rewrite sort_lt_sorted undup_uniq.
+Qed.
+Definition fmap V ks f : {fmap K -> V} := FinMap (fmap_subproof ks f).
 
-Lemma sorted_nil : sorted ord (map key [::]). Proof. by []. Qed.
-Definition nil := FinMap sorted_nil.
+Definition get V (v0 : V) (f : {fmap K -> V}) (k0 : K) :=
+  (nth (k0,v0) f (find (pred1 k0) (keys f))).2.
 
-Definition fnd k (s : fmap) := 
-  if (filter (predk k) (seq_of s)) is (_, v):: _ 
-  then Some v else None.
+Definition setf V (f : {fmap K -> V}) (k0 : K) (v0 : V) : {fmap K -> V} :=
+  fmap (k0 :: keys f) [eta get v0 f with k0 |-> v0].
 
-Fixpoint ins' (k : K) (v : V) (s : seq (K * V)) {struct s} : seq (K * V) :=
-  if s is (k1, v1)::s1 then 
-    if ord k k1 then (k, v)::s else
-      if k == k1 then (k, v)::s1 else (k1, v1)::(ins' k v s1)
-  else [:: (k, v)]. 
-        
-Lemma path_ins' s k1 k2 v : 
-        ord k1 k2 -> path ord k1 (map key s) ->
-          path ord k1 (map key (ins' k2 v s)).
+Lemma filtermap_subproof V P (f : {fmap K -> V}) :
+   sorted <%ord (keys [seq x <- f | P x]).
 Proof.
-elim: s k1 k2 v=>[|[k' v'] s IH] k1 k2 v H1 /=; first by rewrite H1.
-case/andP=>H2 H3; case: ifP=>/= H4; first by rewrite H1 H3 H4.
-case: ifP=>H5 /=; first by rewrite H1 (eqP H5) H3.
-by rewrite H2 IH //; move: (total k2 k'); rewrite H4 H5.
+apply: subseq_sorted (keys_sorted f); first exact: lt_trans.
+apply/subseqP; exists [seq P x | x <- f]; first by rewrite !size_map.
+by rewrite filter_mask map_mask.
 Qed.
 
-Lemma sorted_ins' s k v : 
-        sorted ord (map key s) -> sorted ord (map key (ins' k v s)). 
-Proof.
-case: s=>// [[k' v']] s /= H.
-case: ifP=>//= H1; first by rewrite H H1.
-case: ifP=>//= H2; first by rewrite (eqP H2).
-by rewrite path_ins' //; move: (total k k'); rewrite H1 H2.
-Qed.
+Definition filtermap V P (f : {fmap K -> V}) : {fmap K -> V} :=
+  FinMap (filtermap_subproof P f).
 
-Definition ins k v s := let: FinMap s' p' := s in FinMap (sorted_ins' k v p').
+Definition remf V k := (filtermap (preim (@key K V) (predC1 k))).
 
-Lemma sorted_filter k s : 
-        sorted ord (map key s) -> sorted ord (map key (filter (predCk k) s)).
-Proof. by move=>H; rewrite -filter_map sorted_filter //; apply: trans. Qed.
+Lemma mapf_subproof V V' (f : {fmap K -> V}) (g : K -> V -> V') :
+  sorted Order.lt (map key [seq (kv.1, g kv.1 kv.2) | kv <- f]).
+Proof. by rewrite -map_comp (@eq_map _ _ _ key) //= keys_sorted. Qed.
 
-Definition rem k s := let: FinMap s' p' := s in FinMap (sorted_filter k p').
+Definition mapf V V' (f : {fmap K -> V}) (g : K -> V -> V') : {fmap K -> V'} :=
+  FinMap (mapf_subproof f g).
 
-Definition supp s := map key (seq_of s).
+Definition fnd V (f : {fmap K -> V}) := get None (mapf f (fun _ => some)).
 
 End Ops.
 
-Prenex Implicits fnd ins rem supp.
+Prenex Implicits fmap get setf remf filtermap fnd.
+Arguments nilf {K V}.
+Arguments get : simpl never.
+Arguments setf : simpl never.
+Arguments remf : simpl never.
+Arguments fnd : simpl never.
 
-Section Laws.
-Variables (K : ordType) (V : Type). 
-Notation fmap := (finMap K V). 
-Notation nil := (nil K V).
+Delimit Scope fmap_scope with fmap.
+Local Open Scope fmap_scope.
 
-Lemma ord_path (x y : K) s : ord x y -> path ord y s -> path ord x s.
+Notation "x .[ k <- v ]" := (setf x k v) : fmap_scope.
+Notation "x .[~ k ]" := (remf k x) : fmap_scope.
+Notation "x .[ k ]" := (fnd x k) : fmap_scope.
+Notation "x .[ k | v ]" := (get v x k) : fmap_scope.
+Notation "[ 'fmap' k 'in' keys => E ]" := (fmap keys (fun k => E)) : fmap_scope.
+Notation "[ 'fmap' E | k , v <- s ]" := (mapf s (fun k v => E)) : fmap_scope.
+Notation "[ 'fmap' E | v <- s ]" := (mapf s (fun _ v => E)) : fmap_scope.
+
+Notation fnd_if := (fun_if (fun x => fnd x _)).
+Notation get_if := (fun_if (fun x => get _ x _)).
+
+Canonical  finMapSubType K V := [subType for (@seq_of K V)].
+Definition finMapEqMixin (K : ordType) (V : eqType) :=
+  [eqMixin of {fmap K -> V} by <:].
+Canonical  finMapEqType  (K : ordType) (V : eqType) :=
+  EqType ({fmap K -> V}) (finMapEqMixin K V).
+
+Section Theory.
+
+Variables (K : ordType).
+
+Lemma keys_fmap V (ks : seq K) (f : K -> V) :
+  keys [fmap k in ks => f k] = sort <=%ord (undup ks).
+Proof. by rewrite /= -map_comp (@eq_map _ _ _ id) ?map_id. Qed.
+
+Lemma mem_fmap V (ks : seq K) (f : K -> V) : fmap ks f =i ks.
+Proof. by move=> k'; rewrite inE keys_fmap mem_sort mem_undup. Qed.
+
+Lemma keys_set V (f : {fmap K -> V}) (k0 : K) (v0 : V) :
+  keys (f.[k0 <- v0]) = sort <=%ord (undup (k0 :: keys f)).
+Proof. by rewrite /setf /= -map_comp (@eq_map _ _ _ id) // map_id. Qed.
+
+Lemma mem_setf V (f : {fmap K -> V}) (k0 : K) (v0 : V) k :
+  k \in f.[k0 <- v0] = (k == k0) || (k \in f).
+Proof. by rewrite mem_fmap in_cons. Qed.
+
+Lemma get_head_filter V (v0 : V) (f : {fmap K -> V}) (k : K) :
+  f.[k | v0] = head v0 [seq kv.2 | kv <- f & kv.1 \in pred1 k].
 Proof.
-elim: s x y=>[|k s IH] x y //=.
-by move=>H1; case/andP=>H2 ->; rewrite (trans H1 H2).
+rewrite /get; case: f; elim=> [//|[k' v'] s //= IHs].
+by rewrite inE; have [->|nk'k /path_sorted] //= := altP eqP.
 Qed.
 
-Lemma last_ins' (x : K) (v : V) s : 
-        path ord x (map key s) -> ins' x v s = (x, v) :: s.
-Proof. by elim: s=>[|[k1 v1] s IH] //=; case: ifP. Qed.
-
-Lemma notin_path (x : K) s : path ord x s -> x \notin s.
-Proof. 
-elim: s=>[|k s IH] //=.
-rewrite inE negb_or; case/andP=>T1 T2; case: eqP=>H /=.
-- by rewrite H irr in T1.
-by apply: IH; apply: ord_path T2.
-Qed. 
-
-Lemma path_supp_ord (s : fmap) k : 
-        path ord k (supp s) -> forall m, m \in supp s -> ord k m.
+Lemma fmapK V (v : V) (ks : seq K) (f : K -> V) (k : K) :
+   [fmap k in ks => f k].[k | v] = if k \in ks then f k else v.
 Proof.
-case: s=>s H; rewrite /supp /= => H1 m H2; case: totalP H1 H2=>//.
-- by move=>H1 H2; move: (notin_path (ord_path H1 H2)); case: (m \in _). 
-by move/eqP=>->; move/notin_path; case: (k \in _).
+rewrite /get /=; set ks' := sort _ _.
+have -> : (k \in ks) = (k \in ks') by rewrite mem_sort mem_undup.
+elim: {ks} ks' => // k' ks IHks; rewrite in_cons.
+have [->|] /= := altP eqP; first by rewrite eqxx.
+by rewrite eq_sym => neq_kk' /=; rewrite (negPf neq_kk') /= IHks.
 Qed.
 
-Lemma notin_filter (x : K) s : 
-        x \notin (map key s) -> filter (predk V x) s = [::].
+Lemma mapf_fmap V V' (ks : seq K) (f : K -> V) (g : K -> V -> V') :
+   [fmap g k v | k, v <- [fmap k in ks => f k]] = [fmap k in ks => g k (f k)].
 Proof.
-elim: s=>[|[k v] s IH] //=.
-rewrite inE negb_or; case/andP=>H1 H2.
-by rewrite eq_sym (negbTE H1); apply: IH.
-Qed.         
-   
-Lemma fmapP (s1 s2 : fmap) : (forall k, fnd k s1 = fnd k s2) -> s1 = s2. 
-Proof.
-rewrite /fnd; move: s1 s2 => [s1 P1][s2 P2] H; rewrite fmapE /=.
-elim: s1 P1 s2 P2 H=>[|[k v] s1 IH] /= P1.
-- by case=>[|[k2 v2] s2 P2] //=; move/(_ k2); rewrite eq_refl.
-have S1: sorted ord (map key s1) by apply: path_sorted P1.
-case=>[|[k2 v2] s2] /= P2; first by move/(_ k); rewrite eq_refl.
-have S2: sorted ord (map key s2) by apply: path_sorted P2.
-move: (IH S1 s2 S2)=>{IH} /= IH H.
-move: (notin_path P1) (notin_path P2)=>N1 N2.
-case E: (k == k2).
-- rewrite -{k2 E}(eqP E) in P2 H N2 *.
-  move: (H k); rewrite eq_refl=>[[E2]]; rewrite -E2 {v2 E2} in H *.
-  rewrite IH // => k'.
-  case E: (k == k'); first by rewrite -(eqP E) !notin_filter.
-  by move: (H k'); rewrite E.
-move: (H k); rewrite eq_refl eq_sym E notin_filter //.
-move: (total k k2); rewrite E /=; case/orP=>L1.
-- by apply: notin_path; apply: ord_path P2.
-move: (H k2); rewrite E eq_refl notin_filter //.
-by apply: notin_path; apply: ord_path P1.
+by apply: val_inj; elim: ks => //= ???; rewrite -!map_comp; case: (_ \in _).
 Qed.
 
-Lemma predkN (k1 k2 : K) : predI (predk V k1) (predCk V k2) =1 
-                           if k1 == k2 then pred0 else predk V k1.
-Proof. 
-by move=>x; case: ifP=>H /=; [|case: eqP=>//->]; rewrite ?(eqP H) ?andbN ?H. 
-Qed.
+Lemma fnd_fmap V (ks : seq K) (f : K -> V) (k : K) :
+  [fmap k in ks => f k].[k] = if k \in ks then Some (f k) else None.
+Proof. by rewrite /fnd mapf_fmap fmapK. Qed.
 
-CoInductive supp_spec x (s : fmap) : bool -> Type :=
-| supp_spec_some v of fnd x s = Some v : supp_spec x s true
-| supp_spec_none of fnd x s = None : supp_spec x s false. 
+Lemma size_keys V (f : {fmap K -> V}) : size (keys f) = size f.
+Proof. by rewrite size_map. Qed.
 
-Lemma suppP x (s : fmap) : supp_spec x s (x \in supp s).
-Proof. 
-move E: (x \in supp s)=>b; case: b E; move/idP; last first.
-- move=>H; apply: supp_spec_none.
-  case E: (fnd _ _)=>[v|] //; case: H.
-  rewrite /supp /fnd in E *; case: s E=>/=.
-  elim=>[|[y w] s IH] H1 //=.
-  case: ifP=>H; first by rewrite (eqP H) inE eq_refl.
-  rewrite -topredE /= eq_sym H; apply: IH.
-  by apply: path_sorted H1.
-case: s; elim=>[|[y w] s IH] /= H1 //; rewrite /supp /= inE in IH *.
-case: eqP=>[-> _|H] //=.
-- by apply: (@supp_spec_some _ _ w); rewrite /fnd /= eq_refl.
-move: (path_sorted H1)=>H1'; move/(IH H1'); case=>[v H2|H2]; 
-[apply: (@supp_spec_some _ _ v) | apply: supp_spec_none];
-by rewrite /fnd /=; case: eqP H=>// ->.
-Qed.
+Lemma keys_uniq V (f : {fmap K -> V}) : uniq (keys f).
+Proof. by have := keys_sorted f; rewrite lt_sorted_uniq_le => /andP []. Qed.
 
-Lemma supp_nil : supp nil = [::]. Proof. by []. Qed.
+Lemma keys_sortedW V (f : {fmap K -> V}) : sorted <=%ord (keys f).
+Proof. by have := keys_sorted f; rewrite lt_sorted_uniq_le => /andP []. Qed.
 
-Lemma supp_nilE (s : fmap) : (supp s = [::]) <-> (s = nil).
-Proof. by split=>[|-> //]; case: s; case=>// H; rewrite fmapE. Qed.
+Hint Resolve keys_uniq.
+Hint Resolve keys_sortedW.
 
-Lemma supp_rem k (s : fmap) : 
-        supp (rem k s) =i predI (predC1 k) (mem (supp s)).
+Lemma sort_keys V (f : {fmap K -> V}) : sort <=%ord (keys f) = keys f.
+Proof. by rewrite sort_le_id. Qed.
+
+Lemma undup_keys V (f : {fmap K -> V}) : undup (keys f) = keys f.
+Proof. by rewrite undup_id. Qed.
+
+Lemma keys_mapf V V' (f : {fmap K -> V}) (g : K -> V -> V') :
+  keys [fmap g k v | k, v <- f] = keys f.
+Proof. by rewrite -map_comp. Qed.
+
+Lemma mem_mapf V V' (f : {fmap K -> V}) (g : K -> V -> V') :
+  [fmap g k v | k, v <- f] =i f.
+Proof. by move=> k; rewrite inE keys_mapf. Qed.
+
+Lemma get_default V (v : V) (f : {fmap K -> V}) (k : K) :
+  k \notin f -> f.[k | v] = v.
 Proof.
-case: s => s H1 x; rewrite /supp inE /=.
-by case H2: (x == k)=>/=; rewrite -filter_map mem_filter /= H2.
-Qed.
- 
-Lemma supp_ins k v (s : fmap) : 
-        supp (ins k v s) =i predU (pred1 k) (mem (supp s)).
-Proof. 
-case: s => s H x; rewrite /supp inE /=.
-elim: s x k v H=>[|[k1 v1] s IH] //= x k v H.
-case: ifP=>H1 /=; first by rewrite inE.
-case: ifP=>H2 /=; first by rewrite !inE (eqP H2) orbA orbb.
-by rewrite !inE (IH _ _ _ (path_sorted H)) orbCA.
+move=> knf; rewrite /get nth_default //.
+rewrite (@leq_trans (size (keys f))) //; first by rewrite size_map.
+by rewrite leqNgt -has_find has_pred1.
 Qed.
 
-Lemma fnd_empty k : fnd k nil = None. Proof. by []. Qed.   
+Lemma fnd_default V (f : {fmap K -> V}) (k : K) :
+  k \notin f -> fnd f k = None.
+Proof. by move=> kf; rewrite /fnd get_default ?inE ?keys_mapf. Qed.
 
-Lemma fnd_rem k1 k2 (s : fmap) : 
-        fnd k1 (rem k2 s) = if k1 == k2 then None else fnd k1 s.
-Proof. 
-case: s => s H; rewrite /fnd -filter_predI (eq_filter (predkN k1 k2)).
-by case: eqP=>//; rewrite filter_pred0. 
+Lemma get_mapf V V' (v : V) (f : {fmap K -> V}) (g : K -> V -> V') (k : K) :
+  [fmap g k v | k, v <- f].[k | g k v] = g k (f.[k | v]).
+Proof.
+have [k_key|k_Nkey]:= boolP (k \in f); last first.
+  by rewrite !get_default // inE -map_comp.
+rewrite /get /= -map_comp (@eq_map _ _ _ key) //.
+have find_k : (find (pred1 k) (keys f) < size f)%N.
+  by rewrite -size_keys -has_find has_pred1.
+rewrite (nth_map (k, v)) //=; congr g; rewrite -(nth_map _ k) //.
+by apply/eqP; apply: (@nth_find _ _ (pred1 k)); rewrite has_pred1.
 Qed.
 
-Lemma fnd_ins k1 k2 v (s : fmap) : 
-        fnd k1 (ins k2 v s) = if k1 == k2 then Some v else fnd k1 s. 
-Proof.
-case: s => s H; rewrite /fnd /=.
-elim: s k1 k2 v H=>[|[k' v'] s IH] //= k1 k2 v H.
-- by case: ifP=>H1; [rewrite (eqP H1) eq_refl | rewrite eq_sym H1].
-case: ifP=>H1 /=.
-- by case: ifP=>H2; [rewrite (eqP H2) eq_refl | rewrite (eq_sym k1) H2].
-case: ifP=>H2 /=. 
-- rewrite (eqP H2).   
-  by case: ifP=>H3; [rewrite (eqP H3) eq_refl | rewrite eq_sym H3].
-case: ifP=>H3; first by rewrite -(eqP H3) eq_sym H2.
-by apply: IH; apply: path_sorted H.
-Qed.
- 
-Lemma ins_rem k1 k2 v (s : fmap) : 
-        ins k1 v (rem k2 s) = 
-        if k1 == k2 then ins k1 v s else rem k2 (ins k1 v s).
-Proof.
-move: k1 k2 v s.
-have L3: forall (x : K) s, 
-  path ord x (map key s) -> filter (predCk V x) s = s.
-- move=>x t; move/notin_path; elim: t=>[|[k3 v3] t IH] //=.
-  rewrite inE negb_or; case/andP=>T1 T2. 
-  by rewrite eq_sym T1 IH.
-have L5: forall (x : K) (v : V) s, 
-  sorted ord (map key s) -> ins' x v (filter (predCk V x) s) = ins' x v s.
-- move=>x v s; elim: s x v=>[|[k' v'] s IH] x v //= H.
-  case H1: (ord x k').
-  - case H2: (k' == x)=>/=; first by rewrite (eqP H2) irr in H1.
-    by rewrite H1 L3 //; apply: ord_path H1 H.
-  case H2: (k' == x)=>/=.
-  - rewrite (eqP H2) eq_refl in H *.
-    by rewrite L3 //; apply: last_ins' H.
-  rewrite eq_sym H2 H1 IH //.
-  by apply: path_sorted H.
-move=>k1 k2 v [s H]. 
-case: ifP=>H1; rewrite /ins /rem fmapE /=.
-- rewrite {k1 H1}(eqP H1).
-  elim: s k2 v H=>[|[k' v'] s IH] //= k2 v H.
-  case H1: (k' == k2)=>/=.
-  - rewrite eq_sym H1 (eqP H1) irr in H *.
-    by rewrite L3 // last_ins'.
-  rewrite eq_sym H1; case: ifP=>H3.
-  - by rewrite L3 //; apply: ord_path H3 H.
-  by rewrite L5 //; apply: path_sorted H.
-elim: s k1 k2 H1 H=>[|[k' v'] s IH] //= k1 k2 H1 H; first by rewrite H1.
-case H2: (k' == k2)=>/=.
-- rewrite (eqP H2) in H *; rewrite H1. 
-  case H3: (ord k1 k2)=>/=.
-  - by rewrite H1 eq_refl /= last_ins' // L3 //; apply: ord_path H.
-  by rewrite eq_refl /= IH //; apply: path_sorted H.
-case H3: (ord k1 k')=>/=; first by rewrite H1 H2.
-case H4: (k1 == k')=>/=; first by rewrite H1.
-by rewrite H2 IH //; apply: path_sorted H.
-Qed.
-       
-Lemma ins_ins k1 k2 v1 v2 (s : fmap) : 
-        ins k1 v1 (ins k2 v2 s) = if k1 == k2 then ins k1 v1 s 
-                                  else ins k2 v2 (ins k1 v1 s).
-Proof.
-rewrite /ins; case: s => s H; case H1: (k1 == k2); rewrite fmapE /=.
-- rewrite (eqP H1) {H1}.
-  elim: s H k2 v1 v2=>[|[k3 v3] s IH] /= H k2 v1 v2; 
-    first by rewrite irr eq_refl.
-  case: (totalP k2 k3)=>H1 /=; rewrite ?irr ?eq_refl //.
-  case: (totalP k2 k3) H1=>H2 _ //.
-  by rewrite IH //; apply: path_sorted H.
-elim: s H k1 k2 H1 v1 v2=>[|[k3 v3] s IH] H k1 k2 H1 v1 v2 /=.
-- rewrite H1 eq_sym H1.
-  by case: (totalP k1 k2) H1=>H2 H1.
-case: (totalP k2 k3)=>H2 /=.
-- case: (totalP k1 k2) (H1)=>H3 _ //=; last first.
-  - by case: (totalP k1 k3)=>//= H4; rewrite ?H2 ?H3.
-  case: (totalP k1 k3)=>H4 /=.
-  - case: (totalP k2 k1) H3=>//= H3.
-    by case: (totalP k2 k3) H2=>//=.
-  - rewrite (eqP H4) in H3. 
-    by case: (totalP k2 k3) H2 H3.
-  by case: (totalP k1 k3) (trans H3 H2) H4.
-- rewrite -(eqP H2) {H2} (H1).
-  case: (totalP k1 k2) (H1)=>//= H2 _; rewrite ?irr ?eq_refl //.
-  rewrite eq_sym H1.
-  by case: (totalP k2 k1) H1 H2.
-case: (totalP k1 k3)=>H3 /=.  
-- rewrite eq_sym H1.
-  case: (totalP k2 k1) H1 (trans H3 H2)=>//.
-  by case: (totalP k2 k3) H2=>//=.
-- rewrite (eqP H3).
-  by case: (totalP k2 k3) H2.
-case: (totalP k2 k3)=>H4 /=.
-- by move: (trans H4 H2); rewrite irr.
-- by rewrite (eqP H4) irr in H2.
-by rewrite IH //; apply: path_sorted H.
-Qed. 
+Lemma ex_value V (f : {fmap K -> V}) : keys f != [::] -> V.
+Proof. by case: f => [[|[_ v] Hs] //]; exact: v. Qed.
 
-Lemma rem_empty k : rem k nil = nil. 
-Proof. by rewrite fmapE. Qed.
-
-Lemma rem_rem k1 k2 (s : fmap) : 
-        rem k1 (rem k2 s) = if k1 == k2 then rem k1 s else rem k2 (rem k1 s).
+Lemma key_ex_value V (f : {fmap K -> V}) (k : K) : k \in f -> V.
 Proof.
-rewrite /rem; case: s => s H /=.
-case H1: (k1 == k2); rewrite fmapE /= -!filter_predI; apply: eq_filter=>x /=.
-- by rewrite (eqP H1) andbb.
-by rewrite andbC.
+by rewrite inE => kf; apply: (@ex_value V f); apply: contraTneq kf => ->.
 Qed.
 
-Lemma rem_ins k1 k2 v (s : fmap) : 
-        rem k1 (ins k2 v s) = 
-        if k1 == k2 then rem k1 s else ins k2 v (rem k1 s).
+Lemma eq_in_fmap V (ks : seq K) (f f' : K -> V) :
+  {in ks, f =1 f'} <-> fmap ks f = fmap ks f'.
 Proof.
-rewrite /rem; case: s => s H /=; case H1: (k1 == k2); rewrite /= fmapE /=.
-- rewrite (eqP H1) {H1}.
-  elim: s k2 H=>[|[k3 v3] s IH] k2 /= H; rewrite ?eq_refl 1?eq_sym //.
-  case: (totalP k3 k2)=>H1 /=; rewrite ?eq_refl //=; 
-  case: (totalP k3 k2) H1=>//= H1 _.
-  by rewrite IH //; apply: path_sorted H.
-elim: s k1 k2 H1 H=>[|[k3 v3] s IH] k1 k2 H1 /= H; first by rewrite eq_sym H1.
-case: (totalP k2 k3)=>H2 /=.
-- rewrite eq_sym H1 /=.
-  case: (totalP k3 k1)=>H3 /=; case: (totalP k2 k3) (H2)=>//=.
-  rewrite -(eqP H3) in H1 *.
-  rewrite -IH //; last by apply: path_sorted H. 
-  rewrite last_ins' /= 1?eq_sym ?H1 //.
-  by apply: ord_path H.
-- by move: H1; rewrite (eqP H2) /= eq_sym => -> /=; rewrite irr eq_refl.
-case: (totalP k3 k1)=>H3 /=.
-- case: (totalP k2 k3) H2=>//= H2 _.
-  by rewrite IH //; apply: path_sorted H.
-- rewrite -(eqP H3) in H1 *.
-  by rewrite IH //; apply: path_sorted H.
-case: (totalP k2 k3) H2=>//= H2 _.
-by rewrite IH //; apply: path_sorted H.
+split=> [eq_ff'| eq_ff' k kks].
+  apply: val_inj => /=; apply/eq_in_map => k.
+  by rewrite mem_sort mem_undup => /eq_ff' ->.
+have := congr1 (fun u : finMap _ _ => get (f k) u k) eq_ff'.
+by rewrite !fmapK kks.
 Qed.
 
-Lemma rem_supp k (s : fmap) : 
-        k \notin supp s -> rem k s = s.
+Lemma eq_fmap V (ks : seq K) (f f' : K -> V) :
+  f =1 f' -> fmap ks f = fmap ks f'.
+Proof. by move=> eq_ff'; apply/eq_in_fmap => k; rewrite eq_ff'. Qed.
+
+Lemma finmap_nil V (f : {fmap K -> V}) : keys f = [::] -> f = nilf.
+Proof. by case: f => [[] //= ?] _; apply: val_inj. Qed.
+
+Lemma getK V (f : {fmap K -> V}) (v0 : V) : fmap (keys f) (get v0 f) = f.
 Proof.
-case: s => s H1; rewrite /supp !fmapE /= => H2.
-elim: s H1 H2=>[|[k1 v1] s1 IH] //=; move/path_sorted=>H1.
-rewrite inE negb_or; case/andP=>H2; move/(IH H1)=>H3.
-by rewrite eq_sym H2 H3.
+rewrite (eq_fmap _ (get_head_filter _ _)); symmetry; apply: val_inj => /=.
+case: f; elim=> [|[k v] s IHs] Hs //=; move: Hs IHs.
+rewrite lt_sorted_uniq_le /= => /andP[/andP [ks us] pks].
+have sks:= path_sorted pks; move=> {1}->; last by rewrite lt_sorted_uniq_le us.
+rewrite (negPf ks) !sort_le_id ?undup_id //= !inE eqxx /=.
+congr (_ :: _); apply/eq_in_map => k' k's /=.
+by rewrite inE /= [_ == _]negbTE //; apply: contraNneq ks => ->.
 Qed.
 
-Lemma fnd_supp k (s : fmap) : 
-        k \notin supp s -> fnd k s = None.
-Proof. by case: suppP. Qed.
+Lemma getEfnd V (v0 : V) (f : {fmap K -> V}) (k : K) :
+      f.[k | v0] = odflt v0 f.[k].
+Proof. by rewrite -[f](getK _ v0) fmapK fnd_fmap; case: (_ \in _). Qed.
 
-Lemma fnd_supp_in k (s : fmap) : 
-        k \in supp s -> exists v, fnd k s = Some v.
-Proof. by case: suppP=>[v|]; [exists v|]. Qed.
+Lemma eq_get V (v v' : V) (f : {fmap K -> V}) (k : K) :
+  k \in f -> f.[k | v] = f.[k | v'].
+Proof. by move=> kf; rewrite -[f](getK _ (key_ex_value kf)) !fmapK kf. Qed.
 
-Lemma cancel_ins k v (s1 s2 : fmap) : 
-       k \notin (supp s1) -> k \notin (supp s2) -> 
-         ins k v s1 = ins k v s2 -> s1 = s2.
+Lemma setfK V (v0 : V) (f : {fmap K -> V}) (k : K) (v : V) :
+  f.[k <- v].[k | v0] = v.
+Proof. by rewrite fmapK //= ?eqxx ?mem_head. Qed.
+
+Lemma setfNK V (v0 : V) (f : {fmap K -> V}) (k k' : K) (v : V) :
+   k' != k -> f.[k <- v].[k' | v0] = f.[k' | v0].
 Proof.
-move: s1 s2=>[s1 p1][s2 p2]; rewrite !fmapE /supp /= {p1 p2}.
-elim: s1 k v s2=>[k v s2| [k1 v1] s1 IH1 k v s2] /=.
-- case: s2=>[| [k2 v2] s2] //= _.
-  rewrite inE negb_or; case/andP=>H1 _; case: ifP=>// _.   
-  by rewrite (negbTE H1); case=>E; rewrite E eq_refl in H1.
-rewrite inE negb_or; case/andP=>H1 H2 H3. 
-case: ifP=>H4; case: s2 H3=>[| [k2 v2] s2] //=.
-- rewrite inE negb_or; case/andP=>H5 H6. 
-  case: ifP=>H7; first by case=>->->->.
-  by rewrite (negbTE H5); case=>E; rewrite E eq_refl in H5.
-- by rewrite (negbTE H1)=>_; case=>E; rewrite E eq_refl in H1.
-rewrite inE negb_or (negbTE H1); case/andP=>H5 H6.
-rewrite (negbTE H5); case: ifP=>H7 /=.
-- by case=>E; rewrite E eq_refl in H1.
-by case=>->-> H; congr (_ :: _); apply: IH1 H.
+rewrite fmapK //= in_cons => /negPf -> /=.
+by case: ifP => // k'f; [apply:eq_get|rewrite get_default // k'f].
 Qed.
 
-End Laws.
+Lemma get_set V (v0 : V) (f : {fmap K -> V}) (k k' : K) (v : V) :
+   f.[k <- v].[k' | v0] = (if k' == k then v else f.[k' | v0]).
+Proof. by have [->|/(setfNK _ _ _)->//] := altP eqP; rewrite setfK. Qed.
 
-Section Append. 
-Variable (K : ordType) (V : Type).
-Notation fmap := (finMap K V).  
-Notation nil := (nil K V).
-
-Lemma seqof_ins k v (s : fmap) : 
-        path ord k (supp s) -> seq_of (ins k v s) = (k, v) :: seq_of s.
-Proof. by case: s; elim=>[|[k1 v1] s IH] //= _; case/andP=>->. Qed.
-
-Lemma path_supp_ins k1 k v (s : fmap) : 
-        ord k1 k -> path ord k1 (supp s) -> path ord k1 (supp (ins k v s)).
+Lemma mapf_set V V' (f : {fmap K -> V}) (g : K -> V -> V') (k : K) (v : V) :
+  [fmap g k v | k, v <- f.[k <- v]] = [fmap g k v | k, v <- f].[k <- g k v].
 Proof.
-case: s=>s p.
-elim: s p k1 k v=>[| [k2 v2] s IH] //= p k1 k v H2; first by rewrite H2.
-case/andP=>H3 H4.
-have H5: path ord k1 (map key s) by apply: ord_path H4.
-rewrite /supp /=; case: (totalP k k2)=>H /=.
-- by rewrite H2 H H4.
-- by rewrite H2 (eqP H) H4.
-rewrite H3 /=.
-have H6: sorted ord (map key s) by apply: path_sorted H5. 
-by move: (IH H6 k2 k v H H4); case: s {IH p H4 H5} H6.
+rewrite mapf_fmap /setf keys_mapf. apply/eq_in_fmap => k' /=.
+rewrite in_cons; have [-> //|/= neq_k'k k'_f] := altP eqP.
+by rewrite -get_mapf; apply: eq_get; rewrite mem_mapf.
 Qed.
 
-Lemma path_supp_ins_inv k1 k v (s : fmap) :
-        path ord k (supp s) -> path ord k1 (supp (ins k v s)) -> 
-        ord k1 k && path ord k1 (supp s).
+Lemma getP V (v : V) (f g : {fmap K -> V}) :
+  keys f = keys g -> {in f, get v f =1 get v g} -> f = g.
 Proof.
-case: s=>s p; rewrite /supp /= => H1; rewrite last_ins' //=.
-by case/andP=>H2 H3; rewrite H2; apply: ord_path H3.
+move=> kfg eq_fg; rewrite -[g](getK _ v) -[f](getK _ v) kfg.
+by apply/eq_in_fmap => k kg; rewrite eq_fg ?inE ?kfg //.
 Qed.
 
-Lemma fmap_ind' (P : fmap -> Prop) : 
-        P nil -> (forall k v s, path ord k (supp s) -> P s -> P (ins k v s)) -> 
-        forall s, P s.
+Lemma fnd_set V (f : {fmap K -> V}) (k k' : K) (v : V) :
+   f.[k <- v].[k'] = (if k' == k then Some v else f.[k']).
+Proof. by rewrite /fnd mapf_set get_set. Qed.
+
+Lemma fndSome V (f : {fmap K -> V}) (k : K) : f.[k] = (k \in f) :> bool.
 Proof.
-move=>H1 H2; case; elim=>[|[k v] s IH] /= H.
-- by rewrite (_ : FinMap _ = nil); last by rewrite fmapE.
-have S: sorted ord (map key s) by apply: path_sorted H.  
-rewrite (_ : FinMap _ = ins k v (FinMap S)); last by rewrite fmapE /= last_ins'.
-by apply: H2.
+have [kf|/fnd_default -> //] := boolP (_ \in _).
+by rewrite -[f](getK _ (key_ex_value kf)) fnd_fmap kf.
 Qed.
 
-Fixpoint fcat' (s1 : fmap) (s2 : seq (K * V)) {struct s2} : fmap :=
-  if s2 is (k, v)::t then fcat' (ins k v s1) t else s1.
+Lemma not_fnd V (f : {fmap K -> V}) (k : K) : k \notin f -> fnd f k = None.
+Proof. by rewrite -fndSome; case: fnd. Qed.
 
-Definition fcat s1 s2 := fcat' s1 (seq_of s2).
-
-Lemma fcat_ins' k v s1 s2 : 
-        k \notin (map key s2) -> fcat' (ins k v s1) s2 = ins k v (fcat' s1 s2). 
+Lemma fndE V (v : V) (f : {fmap K -> V}) (k : K) :
+  f.[k] = if k \in f then Some f.[k | v] else None.
 Proof.
-move=>H; elim: s2 k v s1 H=>[|[k2 v2] s2 IH] k1 v1 s1 //=.
-rewrite inE negb_or; case/andP=>H1 H2.
-by rewrite -IH // ins_ins eq_sym (negbTE H1).
+have [kf|nkf] := boolP (_ \in _); last by rewrite fnd_default.
+by move: kf; rewrite -fndSome getEfnd; case: fnd.
 Qed.
 
-Lemma fcat_nil' s : fcat' nil (seq_of s) = s.
+CoInductive pre_finmap_spec V (f : {fmap K -> V}) :
+  {fmap K -> V} -> seq K -> pred K -> bool -> Type :=
+| PreFinmapNil of f = nilf : pre_finmap_spec f nilf [::] (mem [::]) true
+| PreFinmapNNil (v : V) (k : K) of k \in f :
+  pre_finmap_spec f f (keys f) (mem f) false.
+
+Lemma pre_finmapP V (f : {fmap K -> V}) :
+  pre_finmap_spec f f (keys f) (mem f) (keys f == [::]).
 Proof.
-elim/fmap_ind': s=>[|k v s L IH] //=.
-by rewrite seqof_ins //= (_ : FinMap _ = ins k v nil) // 
-     fcat_ins' ?notin_path // IH.
+have [/finmap_nil->|kf] := altP (keys f =P [::]); first by constructor.
+have v := ex_value kf; case ekf: keys kf => [//|k ks] _.
+by rewrite -ekf; apply: (@PreFinmapNNil _ _ v k); rewrite inE ekf mem_head.
 Qed.
 
-Lemma fcat0s s : fcat nil s = s. Proof. by apply: fcat_nil'. Qed.
-Lemma fcats0 s : fcat s nil = s. Proof. by []. Qed.
-
-Lemma fcat_inss k v s1 s2 : 
-        k \notin supp s2 -> fcat (ins k v s1) s2 = ins k v (fcat s1 s2).
-Proof. by case: s2=>s2 p2 H /=; apply: fcat_ins'. Qed.
-
-Lemma fcat_sins k v s1 s2 : 
-        fcat s1 (ins k v s2) = ins k v (fcat s1 s2).
+Lemma fnd_mapf V V' (f : {fmap K -> V}) (g : K -> V -> V') (k : K) :
+  [fmap g k v | k, v <- f].[k] = omap (g k) f.[k].
 Proof.
-elim/fmap_ind': s2 k v s1=>[|k1 v1 s1 H1 IH k2 v2 s2] //.
-case: (totalP k2 k1)=>//= H2.
-- have H: path ord k2 (supp (ins k1 v1 s1)).
-  - by apply: (path_supp_ins _ H2); apply: ord_path H1.
-  by rewrite {1}/fcat seqof_ins //= fcat_ins' ?notin_path.
-- by rewrite IH ins_ins H2 IH ins_ins H2.
-have H: path ord k1 (supp (ins k2 v2 s1)) by apply: (path_supp_ins _ H2).
-rewrite ins_ins.
-case: (totalP k2 k1) H2 => // H2 _.
-rewrite {1}/fcat seqof_ins //= fcat_ins' ?notin_path // IH ?notin_path //. 
-rewrite ins_ins; case: (totalP k2 k1) H2 => // H2 _; congr (ins _ _ _).
-by rewrite -/(fcat s2 (ins k2 v2 s1)) IH.
-Qed. 
-
-Lemma fcat_rems k s1 s2 : 
-        k \notin supp s2 -> fcat (rem k s1) s2 = rem k (fcat s1 s2).
-Proof.
-elim/fmap_ind': s2 k s1=>[|k2 v2 s2 H IH] k1 v1.
-- by rewrite !fcats0.
-rewrite supp_ins inE /= negb_or; case/andP=>H1 H2.
-by rewrite fcat_sins IH // ins_rem eq_sym (negbTE H1) -fcat_sins.
+have [_ //|v] := pre_finmapP f.
+by rewrite (fndE (g k v)) (fndE v) mem_mapf get_mapf; case: (_ \in _).
 Qed.
 
-Lemma fcat_srem k s1 s2 : 
-        k \notin supp s1 -> fcat s1 (rem k s2) = rem k (fcat s1 s2).
+Lemma finmap_fndNone V (f : {fmap K -> V}) : fnd f =1 (fun _=> None) -> f = nilf.
 Proof.
-elim/fmap_ind': s2 k s1=>[|k2 v2 s2 H IH] k1 s1.
-- rewrite rem_empty fcats0.
-  elim/fmap_ind': s1=>[|k3 v3 s3 H1 IH]; first by rewrite rem_empty.
-  rewrite supp_ins inE /= negb_or.
-  case/andP=>H2; move/IH=>E; rewrite {1}E . 
-  by rewrite ins_rem eq_sym (negbTE H2).
-move=>H1; rewrite fcat_sins rem_ins; case: ifP=>E.
-- by rewrite rem_ins E IH.
-by rewrite rem_ins E -IH // -fcat_sins.
+have [[k kf _]|] := altP (@hasP _ predT (keys f)).
+  by move=> /(_ k) /(congr1 isSome); rewrite fndSome kf.
+by rewrite has_filter filter_predT negbK => /eqP /finmap_nil->.
 Qed.
 
-Lemma fnd_fcat k s1 s2 :  
-        fnd k (fcat s1 s2) = 
-        if k \in supp s2 then fnd k s2 else fnd k s1.
+Lemma fndP V (f g : {fmap K -> V}) : fnd f =1 fnd g -> f = g.
 Proof.
-elim/fmap_ind': s2 k s1=>[|k2 v2 s2 H IH] k1 s1.
-- by rewrite fcats0.
-rewrite supp_ins inE /=; case: ifP; last first.
-- move/negbT; rewrite negb_or; case/andP=>H1 H2.
-  by rewrite fcat_sins fnd_ins (negbTE H1) IH (negbTE H2).
-case/orP; first by move/eqP=><-; rewrite fcat_sins !fnd_ins eq_refl.
-move=>H1; rewrite fcat_sins !fnd_ins.
-by case: ifP=>//; rewrite IH H1.
+have [_|v _ _ efg] := pre_finmapP g; first by apply: finmap_fndNone => k.
+apply: (@getP _ v) => // [|k kf]; last by rewrite !getEfnd efg.
+by apply: eq_sorted_lt; rewrite ?keys_sorted // => k; rewrite -!fndSome efg.
 Qed.
 
-Lemma supp_fcat s1 s2 : supp (fcat s1 s2) =i [predU supp s1 & supp s2].
+Lemma congr_fmap V (ks ks' : seq K) (f f' : K -> V) :
+  ks =i ks' -> f =1 f' -> fmap ks f = fmap ks' f'.
+Proof. by move=> eks ef; apply: fndP => k; rewrite !fnd_fmap eks ef. Qed.
+
+Lemma keys_rem V (f : {fmap K -> V}) (k : K) : keys f.[~ k] = rem k (keys f).
+Proof. by rewrite -filter_map -rem_filter. Qed.
+
+Lemma mem_remf V (f : {fmap K -> V}) (k k' : K) :
+   k \in f.[~ k'] = (k != k') && (k \in f).
+Proof. by rewrite inE keys_rem mem_rem_uniq. Qed.
+
+Lemma mem_remfF V (f : {fmap K -> V}) (k : K) : k \in f.[~ k] = false.
+Proof. by rewrite inE keys_rem mem_remF. Qed.
+
+Lemma finmapE V (v0 : V) (f : {fmap K -> V}) :
+  f = [seq (k, get v0 f k) | k <- keys f] :> seq _.
+Proof. by rewrite -{1}[f](getK _ v0) /= undup_keys sort_keys. Qed.
+
+Lemma filtermapE V (v0 : V) P (f : {fmap K -> V}) :
+  filtermap P f = fmap [seq k <- keys f | P (k, get v0 f k)] (get v0 f).
 Proof.
-elim/fmap_ind': s2 s1=>[|k v s L IH] s1.
-- by rewrite supp_nil fcats0 => x; rewrite inE /= orbF.
-rewrite fcat_sins ?notin_path // => x.
-rewrite supp_ins !inE /=. 
-case E: (x == k)=>/=.
-- rewrite ?inE !supp_ins ?inE E orbT.
-  reflexivity.
-rewrite ?inE. rewrite ?supp_ins. rewrite ?inE /=.
-rewrite IH. rewrite ?inE /=. rewrite E /=.
-reflexivity.
+apply: val_inj => /=; rewrite undup_id ?filter_uniq //.
+rewrite sort_le_id ?(sorted_filter (@le_trans _)) //.
+by rewrite {1}(finmapE v0) filter_map.
 Qed.
 
-End Append.
+Lemma remfE V (v0 : V) (f : {fmap K -> V}) (k : K) :
+  f.[~k] = fmap (rem k (keys f)) (get v0 f).
+Proof. by rewrite /remf (filtermapE v0) /= rem_filter. Qed.
 
-(* an induction principle for pairs of finite maps with equal support *)
-
-Section FMapInd.
-Variables (K : ordType) (V : Type).
-Notation fmap := (finMap K V).
-Notation nil := (@nil K V).
-
-Lemma supp_eq_ins (s1 s2 : fmap) k1 k2 v1 v2 :
-        path ord k1 (supp s1) -> path ord k2 (supp s2) ->
-          supp (ins k1 v1 s1) =i supp (ins k2 v2 s2) -> 
-        k1 = k2 /\ supp s1 =i supp s2.
-Proof.
-move=>H1 H2 H; move: (H k1) (H k2).
-rewrite !supp_ins !inE /= !eq_refl (eq_sym k2).
-case: totalP=>/= E; last 1 first.
-- by move: H1; move/(ord_path E); move/notin_path; move/negbTE=>->.
-- by move: H2; move/(ord_path E); move/notin_path; move/negbTE=>->.
-rewrite (eqP E) in H1 H2 H * => _ _; split=>// x; move: (H x).
-rewrite !supp_ins !inE /=; case: eqP=>//= -> _.
-by rewrite (negbTE (notin_path H1)) (negbTE (notin_path H2)).
-Qed. 
-
-Lemma fmap_ind2 (P : fmap -> fmap -> Prop) :
-        P nil nil -> 
-        (forall k v1 v2 s1 s2, 
-           path ord k (supp s1) -> path ord k (supp s2) -> 
-           P s1 s2 -> P (ins k v1 s1) (ins k v2 s2)) ->
-        forall s1 s2, supp s1 =i supp s2 -> P s1 s2.
-Proof.
-move=>H1 H2; elim/fmap_ind'=>[|k1 v1 s1 T1 IH1];
-elim/fmap_ind'=>[|k2 v2 s2 T2 _] //.
-- by move/(_ k2); rewrite supp_ins inE /= eq_refl supp_nil.
-- by move/(_ k1); rewrite supp_ins inE /= eq_refl supp_nil.
-by case/supp_eq_ins=>// E; rewrite -{k2}E in T2 *; move/IH1; apply: H2.
+Lemma get_rem V (v0 : V) (f : {fmap K -> V}) (k k' : K) :
+  (f.[~ k]).[k' | v0] = if k' == k then v0 else f.[k' | v0].
+ Proof.
+rewrite (remfE v0) fmapK mem_rem_uniq // inE /=; case: eqP => //= _.
+by have [//|kf] := boolP (_ \in _); rewrite get_default.
 Qed.
 
-End FMapInd.
+Lemma fnd_rem V (f : {fmap K -> V}) (k k' : K) :
+  f.[~ k].[k'] = if k' == k then None else f.[k'].
+Proof.
+have [_|v _ _] := pre_finmapP f; first by rewrite !fnd_default // if_same.
+by rewrite !(fndE v) get_rem mem_remf; case: eqP; case: (_ \in _).
+Qed.
+
+Lemma setf_get V (v0 : V) (f : {fmap K -> V}) (k : K) :
+ f.[k <- f.[k | v0]] = if k \in f then f else f.[k <- v0].
+Proof.
+case: ifP => kf; last by rewrite get_default // kf.
+apply: (@getP _ v0); first by rewrite keys_set /= kf undup_keys sort_keys.
+by move=> k' _; have [->|nk''] := eqVneq k' k;  rewrite (setfK,setfNK).
+Qed.
+
+Lemma setf_rem V (f : {fmap K -> V}) (k : K) (v : V) : k \in f ->
+  f.[~ k].[k <- v] = f.[k <- v].
+Proof.
+move=> kf; apply: congr_fmap => k' /=; last by rewrite get_rem; case: eqP.
+by rewrite keys_rem !in_cons mem_rem_uniq // inE /=; case: eqP.
+Qed.
+
+Lemma setf_mapf V V' (f : {fmap K -> V}) (g : K -> V -> V') (k : K) (v : V) :
+  [fmap g k v | k, v <- f].[k <- g k v] = [fmap g k v | k, v <- f.[k <- v]].
+Proof.
+by apply: fndP => k'; rewrite !(fnd_set, fnd_mapf); case: eqP => // ->.
+Qed.
+
+Lemma finMapP V (f : {fmap K -> V}) (k : K) : k \in f ->
+  {gv : {fmap K -> V} * V | k \notin gv.1 & f = gv.1.[k <- gv.2]}.
+Proof.
+move=> kf; have v0 := key_ex_value kf.
+exists (remf k f, get v0 f k) => /=; first by rewrite mem_remfF.
+by rewrite setf_rem // setf_get kf.
+Qed.
+
+CoInductive mem_finmap_spec V (k : K) (f : {fmap K -> V}) :
+  {fmap K -> V} -> option V -> bool -> bool -> Type :=
+| MemFinmapNil of k \notin f :
+    mem_finmap_spec k f f None (keys f == [::]) false
+| MemFinmapNNil (v : V) g of f = g.[k <- v] & k \notin g :
+    mem_finmap_spec k f (setf g k v) (Some v) false true.
+
+Lemma mem_finmapP V k (f : {fmap K -> V}) :
+  mem_finmap_spec k f f f.[k] (keys f == [::]) (k \in f).
+Proof.
+have [kf|kf] := boolP (_ \in _); last first.
+  by rewrite fnd_default //; constructor.
+have [[g v] /= kg {-4}->] := finMapP kf.
+by rewrite inE in kf *; rewrite fnd_set eqxx; case: keys kf => //; constructor.
+Qed.
+
+CoInductive get_finmap_spec V (v0 : V) (k : K) (f : {fmap K -> V}) :
+  {fmap K -> V} -> bool -> bool -> option V -> V -> Type :=
+| GetFinmapNil of k \notin f :
+    get_finmap_spec v0 k f f (keys f == [::]) false None v0
+| GetFinmapNNil (v : V) g of f = g.[k <- v] :
+    get_finmap_spec v0 k f (g.[k <- v]) false true (Some v) v.
+
+Lemma get_finmapP V v0 k (f : {fmap K -> V}) :
+  get_finmap_spec v0 k f f (keys f == [::]) (k \in f)
+                           (f.[k]) (f.[k | v0]).
+Proof.
+have [kf|v g _] := mem_finmapP; first by rewrite get_default //; constructor.
+by rewrite setfK; constructor.
+Qed.
+
+Lemma setfC V (f : {fmap K -> V}) k1 k2 v1 v2 :
+   f.[k1 <- v1].[k2 <- v2] =
+   if k2 == k1 then f.[k2 <- v2] else f.[k2 <- v2].[k1 <- v1].
+Proof.
+apply: fndP => k /=; have [->|Nk12] := altP eqP.
+  by rewrite !fnd_set; case: eqP.
+by rewrite !fnd_set; have [->|//] := altP eqP; rewrite (negPf Nk12).
+Qed.
+
+Lemma remf_id V (f : {fmap K -> V}) k : k \notin f -> f.[~ k] = f.
+Proof.
+move=> kf; apply: fndP => k'; rewrite fnd_rem.
+by case: eqP => // ->; rewrite not_fnd.
+Qed.
+
+Lemma remf_set V (f : {fmap K -> V}) (k k' : K) (v : V) :
+  f.[k' <- v].[~ k] = if k == k' then f.[~ k] else f.[~ k].[k' <- v].
+Proof.
+apply: fndP => k'' /=; have [->|Nk12] := altP eqP.
+  by rewrite !fnd_rem fnd_set; case: eqP.
+by rewrite !(fnd_rem, fnd_set); have [->|//] := altP eqP; rewrite (negPf Nk12).
+Qed.
+
+Lemma is_fnd V (f : {fmap K -> V}) k : k \in f -> exists v, f.[k] = Some v.
+Proof. by rewrite -fndSome; case: fnd => v //; exists v. Qed.
+
+Lemma setf_inj V (f f' : {fmap K -> V}) k v :
+  k \notin f -> k \notin f' -> f.[k <- v] = f'.[k <- v]-> f = f'.
+Proof.
+move=> kf kf' eq_fkv; apply: fndP => k'; have := congr1 (fnd^~ k') eq_fkv.
+by rewrite !fnd_set; case: eqP => // ->; rewrite !fnd_default.
+Qed.
+
+CoInductive finmap_spec V (f : {fmap K -> V}) :
+  {fmap K -> V} -> seq K -> bool -> Type :=
+| FinmapNil of f = nilf : finmap_spec f nilf [::] true
+| FinmapNNil (v : V) (k : K) g of f = g.[k <- v] & k \notin g :
+    finmap_spec f g.[k <- v] (k :: keys g) false.
+
+Lemma finmapP V (f : {fmap K -> V}) : finmap_spec f f (keys f) (keys f == [::]).
+Proof.
+have [/finmap_nil->|kf] := altP (keys f =P [::]); first by constructor.
+case ekf: keys kf => [//|k ks] _.
+case: (mem_finmapP k f); first by rewrite inE ekf mem_head.
+move=> v g eq_f kNg; rewrite -{1}eq_f.
+suff -> : ks = keys g by constructor.
+have -> : g = f.[~ k] by rewrite eq_f remf_set eqxx remf_id.
+by rewrite keys_rem ekf /= eqxx.
+Qed.
+
+End Theory.
+Hint Resolve keys_uniq.
+Hint Resolve keys_sortedW.
+
+Section Cat.
+Variables (K : ordType).
+
+Definition catf V (f g : {fmap K -> V}) :=
+  if (keys g != [::]) =P true is ReflectT P
+  then let v := ex_value P in
+    fmap (keys f ++ keys g)
+         (fun k => if k \in g then g.[k | v] else f.[k | v])
+  else f.
+
+Definition disjf V (f g : {fmap K -> V}) : bool :=
+  all (predC (mem (keys g))) (keys f).
+
+Lemma disjfP {V} {f g : {fmap K -> V}} :
+  reflect {in f & g, forall k k', k != k'} (disjf f g).
+Proof.
+apply: (iffP idP) => [dfg k k' kf k'g|Hfg].
+  by have /allP /(_ _ kf) := dfg; apply: contraNneq => ->.
+by apply/allP=> k kf; have /contraTN := Hfg _ k kf; apply.
+Qed.
+
+Lemma disjfC  V (f g : {fmap K -> V}) : disjf f g = disjf g f.
+Proof. by apply/disjfP/disjfP => Hfg ????; rewrite eq_sym; apply: Hfg. Qed.
+
+Lemma disjfPr {V} {f g : {fmap K -> V}} :
+  reflect {in f, forall k, k \in g = false} (disjf f g).
+Proof.
+apply: (iffP disjfP) => [dfg k kf|dfg k k' kf kg].
+  by apply: contraTF isT => /(dfg _ _ kf); rewrite eqxx.
+by apply: contraTneq kg => <-; rewrite dfg.
+Qed.
+
+Lemma disjfPl {V} {f g : {fmap K -> V}} :
+  reflect {in g, forall k, k \in f = false} (disjf f g).
+Proof. by rewrite disjfC; apply: disjfPr. Qed.
+
+Lemma disjf0 V (f : {fmap K -> V}) : disjf f nilf.
+Proof. by apply/disjfP => k k'. Qed.
+
+Lemma disj0f V (f : {fmap K -> V}) : disjf nilf f.
+Proof. by apply/disjfP => k k'. Qed.
+
+Lemma catf0 V (f : {fmap K -> V}) : catf f nilf = f.
+Proof. by rewrite /catf; case: eqP. Qed.
+
+Lemma catfE V v0 (f g : {fmap K -> V}) : catf f g =
+  fmap (keys f ++ keys g)
+       (fun k => if k \in g then g.[k | v0] else f.[k | v0]).
+Proof.
+rewrite /catf; case: eqP => /= [P|]; last first.
+  by have [|//] := finmapP; rewrite cats0 /= getK.
+apply/eq_in_fmap => /= k; rewrite mem_cat orbC => kfg.
+by case: (boolP (_ \in g)) kfg => //= ? ?; apply: eq_get.
+Qed.
+
+Lemma get_cat V v0 (f g : {fmap K -> V}) k :
+  get v0 (catf f g) k = if k \in g then g.[k | v0] else f.[k | v0].
+Proof.
+rewrite (catfE v0) !fmapK mem_cat orbC.
+by case: mem_finmapP => //; case: get_finmapP.
+Qed.
+
+Lemma keys_cat V (f g : {fmap K -> V}) :
+  keys (catf f g) = sort <=%ord (undup (keys f ++ keys g)).
+Proof.
+have [_//=|v _ _] := pre_finmapP g; last by rewrite (catfE v) keys_fmap.
+by rewrite catf0 cats0 undup_keys sort_keys.
+Qed.
+
+Lemma mem_catf V (f g : {fmap K -> V}) k :
+ k \in catf f g = (k \in f) || (k \in g).
+Proof. by rewrite inE keys_cat mem_sort mem_undup mem_cat. Qed.
+
+Lemma fnd_cat V (f g : {fmap K -> V}) k :
+  fnd (catf f g) k = if k \in g then g.[k] else f.[k].
+Proof.
+have [_//=|v _ _] := pre_finmapP g; first by rewrite catf0.
+by rewrite !(fndE v) /= get_cat mem_catf orbC; do !case: (_ \in _).
+Qed.
+
+Lemma cat0f V (f : {fmap K -> V}) : catf nilf f = f.
+Proof.
+apply: fndP => k; rewrite fnd_cat.
+by case: mem_finmapP => // v {f} f _; rewrite fnd_set eqxx.
+Qed.
+
+Lemma catf_setl V f g k (v : V) :
+  catf f.[k <- v] g = if k \in g then catf f g else (catf f g).[k <- v].
+Proof.
+apply: fndP => k'0; rewrite !(fnd_cat,fnd_if,fnd_set).
+by have [->|Nkk'] := altP eqP; do !case: (_ \in _).
+Qed.
+
+Lemma catf_setr V f g k (v : V) : catf f g.[k <- v] = (catf f g).[k <- v].
+Proof.
+apply: fndP => k'; rewrite !(fnd_cat, fnd_set) mem_setf.
+by case: (_ == _); case: (_ \in _).
+Qed.
+
+Lemma catf_reml V k (f g : {fmap K -> V}) :
+  catf f.[~ k] g = if k \in g then catf f g else (catf f g).[~ k].
+Proof.
+apply: fndP => k'; rewrite !(fnd_if, fnd_cat, fnd_rem).
+by have [->|?] := altP eqP; do !case: (_ \in _).
+Qed.
+
+Lemma disjf_setr V (f g : {fmap K -> V}) k v :
+  disjf f g.[k <- v] = (k \notin f) && (disjf f g).
+Proof.
+apply/idP/idP => [dfg|/andP [kf dfg]].
+  rewrite (disjfPl dfg) ?mem_setf ?eqxx //=; apply/disjfPl=> k' k'g.
+  by rewrite (disjfPl dfg) // mem_setf k'g orbT.
+apply/disjfPl => k'; rewrite mem_setf.
+by have [->|_ /disjfPl->] := altP eqP; first by rewrite (negPf kf).
+Qed.
+
+End Cat.
 
 Section DisjointUnion.
-Variable (K : ordType) (V : Type).
-Notation fmap := (finMap K V).  
-Notation nil := (nil K V).
+Variables (K : ordType) (V : Type).
+Notation finmap := ({fmap K -> V}).
+Notation nil := (@nil K V).
 
-Definition disj (s1 s2 : fmap) := 
-  all (predC (fun x => x \in supp s2)) (supp s1). 
-
-CoInductive disj_spec (s1 s2 : fmap) : bool -> Type :=
-| disj_true of (forall x, x \in supp s1 -> x \notin supp s2) : 
-    disj_spec s1 s2 true
-| disj_false x of x \in supp s1 & x \in supp s2 : 
-    disj_spec s1 s2 false.
-
-Lemma disjP s1 s2 : disj_spec s1 s2 (disj s1 s2).
+Lemma disjf_remr k (s1 s2 : finmap) :
+  k \notin s1 -> disjf s1 s2.[~k] = disjf s1 s2.
 Proof.
-rewrite /disj; case E: (all _ _).
-- by apply: disj_true; case: allP E.
-move: E; rewrite all_predC; move/negbFE.
-by case: hasPx=>// x H1 H2 _; apply: disj_false H1 H2.
+move=> kNs1; apply/disjfPr/disjfPr => Hs2 x xs1; last first.
+  by rewrite mem_remf Hs2 // andbF.
+have := Hs2 x xs1; rewrite mem_remf; apply: contraFF => ->; rewrite andbT.
+by apply: contraNneq kNs1 => <-.
 Qed.
 
-Lemma disjC s1 s2 : disj s1 s2 = disj s2 s1.
-Proof.
-case: disjP; case: disjP=>//.
-- by move=>x H1 H2; move/(_ x H2); rewrite H1.
-by move=>H1 x H2; move/H1; rewrite H2.
-Qed.  
+Lemma disjf_reml k (s1 s2 : finmap) :
+  k \notin s2 -> disjf s1.[~k] s2 = disjf s1 s2.
+Proof. by move=> kNs2; rewrite disjfC disjf_remr // disjfC. Qed.
 
-Lemma disj_nil (s : fmap) : disj s nil.
-Proof. by case: disjP. Qed.
-
-Lemma disj_ins k v (s1 s2 : fmap) : 
-        disj s1 (ins k v s2) = (k \notin supp s1) && (disj s1 s2).
+Lemma disjf_catl (s s1 s2 : finmap) :
+  disjf s (catf s1 s2) = disjf s s1 && disjf s s2.
 Proof.
-case: disjP=>[H|x H1]. 
-- case E: (k \in supp s1)=>/=.
-  - by move: (H _ E); rewrite supp_ins inE /= eq_refl.
-  case: disjP=>// x H1 H2.
-  by move: (H _ H1); rewrite supp_ins inE /= H2 orbT.
-rewrite supp_ins inE /=; case/orP=>[|H2].
-- by move/eqP=><-; rewrite H1.
-rewrite andbC; case: disjP=>[H|y H3 H4] //=.
-by move: (H _ H1); rewrite H2.
-Qed.
-   
-Lemma disj_rem k (s1 s2 : fmap) : 
-        disj s1 s2 -> disj s1 (rem k s2).
-Proof.
-case: disjP=>// H _; case: disjP=>// x; move/H. 
-by rewrite supp_rem inE /= andbC; move/negbTE=>->.
+apply/disjfPr/idP => [Ncat|/andP[/disjfPr Ns1 /disjfPr Ns2]]; last first.
+  by move=> k ks /=; rewrite mem_catf Ns1 ?Ns2.
+apply/andP; split; apply/disjfPr=> k ks; have := Ncat k ks;
+by rewrite mem_catf; apply: contraFF => ->; rewrite ?orbT.
 Qed.
 
-Lemma disj_remE k (s1 s2 : fmap) : 
-        k \notin supp s1 -> disj s1 (rem k s2) = disj s1 s2.
+Lemma catfC (s1 s2 : finmap) : disjf s1 s2 -> catf s1 s2 = catf s2 s1.
 Proof.
-move=>H; case: disjP; case: disjP=>//; last first.
-- move=>H1 x; move/H1; rewrite supp_rem inE /= => E.
-  by rewrite (negbTE E) andbF.
-move=>x H1 H2 H3; move: (H3 x H1) H. 
-rewrite supp_rem inE /= negb_and H2 orbF negbK.
-by move/eqP=><-; rewrite H1. 
+move=> ds1s2; apply/fndP => x; rewrite !fnd_cat.
+case: ifPn=> [xs2|xNs2]; first by rewrite (disjfPl ds1s2).
+by case: ifPn=> [//|xNs1]; rewrite !fnd_default.
 Qed.
 
-Lemma disj_fcat (s s1 s2 : fmap) : 
-        disj s (fcat s1 s2) = disj s s1 && disj s s2.
+Lemma catfA (s1 s2 s3 : finmap) :
+        disjf s2 s3 -> catf s1 (catf s2 s3) = catf (catf s1 s2) s3.
 Proof.
-elim/fmap_ind': s s1 s2=>[|k v s L IH] s1 s2.
-- by rewrite !(disjC nil) !disj_nil.
-rewrite !(disjC (ins _ _ _)) !disj_ins supp_fcat inE /= negb_or. 
-case: (k \in supp s1)=>//=.
-case: (k \in supp s2)=>//=; first by rewrite andbF.
-by rewrite -!(disjC s) IH.
+move=> ds2s3; apply: fndP => x; rewrite !fnd_cat !mem_catf.
+have [xs3|/= xNs3] := boolP (_ \in s3); last by rewrite orbF.
+by rewrite (disjfPl ds2s3).
 Qed.
 
-Lemma fcatC (s1 s2 : fmap) : disj s1 s2 -> fcat s1 s2 = fcat s2 s1.
+Lemma catfAC (s1 s2 s3 : finmap) :
+  [&& disjf s1 s2, disjf s2 s3 & disjf s1 s3] ->
+    catf (catf s1 s2) s3 = catf (catf s1 s3) s2.
+Proof. by case/and3P=>???; rewrite -!catfA ?(@catfC s2) // disjfC. Qed.
+
+Lemma catfCA (s1 s2 s3 : finmap) :
+  [&& disjf s1 s2, disjf s2 s3 & disjf s1 s3] ->
+    catf s1 (catf s2 s3) = catf s2 (catf s1 s3).
+Proof. by case/and3P=>???; rewrite !catfA ?(@catfC s2) // disjfC. Qed.
+
+Lemma catfsK (s s1 s2 : finmap) :
+  disjf s1 s && disjf s2 s -> catf s1 s = catf s2 s -> s1 = s2.
 Proof.
-rewrite /fcat.
-elim/fmap_ind': s2 s1=>[|k v s2 L IH] s1 /=; first by rewrite fcat_nil'.
-rewrite disj_ins; case/andP=>D1 D2.
-by rewrite fcat_ins' // -IH  // seqof_ins //= -fcat_ins' ?notin_path.
+move=> /andP[ds1s ds2s] eq_s12s; apply: fndP => k.
+move: eq_s12s => /(congr1 (fnd^~ k)); rewrite !fnd_cat.
+by case: ifP => // ks _; rewrite !fnd_default ?(disjfPl ds1s) ?(disjfPl ds2s).
 Qed.
 
-Lemma fcatA (s1 s2 s3 : fmap) : 
-        disj s2 s3 -> fcat (fcat s1 s2) s3 = fcat s1 (fcat s2 s3).
+Lemma catfKs (s s1 s2 : finmap) :
+  disjf s s1 && disjf s s2 -> catf s s1 = catf s s2 -> s1 = s2.
 Proof.
-move=>H.
-elim/fmap_ind': s3 s1 s2 H=>[|k v s3 L IH] s1 s2 /=; first by rewrite !fcats0.
-rewrite disj_ins; case/andP=>H1 H2.  
-by rewrite fcat_sins ?notin_path // IH // fcat_sins ?notin_path // fcat_sins.
-Qed.         
-
-Lemma fcatAC (s1 s2 s3 : fmap) : 
-        [&& disj s1 s2, disj s2 s3 & disj s1 s3] -> 
-        fcat s1 (fcat s2 s3) = fcat s2 (fcat s1 s3).
-Proof. by case/and3P=>H1 H2 H3; rewrite -!fcatA // (@fcatC s1 s2). Qed.
-
-Lemma fcatCA (s1 s2 s3 : fmap) : 
-        [&& disj s1 s2, disj s2 s3 & disj s1 s3] -> 
-        fcat (fcat s1 s2) s3 = fcat (fcat s1 s3) s2.
-Proof. 
-by case/and3P=>H1 H2 H3; rewrite !fcatA // ?(@fcatC s2 s3) ?(disjC s3). 
+move=> /andP [??]; rewrite !(@catfC s) //.
+by move => /catfsK -> //; apply/andP; split; rewrite disjfC.
 Qed.
 
-Lemma fcatsK (s s1 s2 : fmap) : 
-        disj s1 s && disj s2 s -> fcat s1 s = fcat s2 s -> s1 = s2.
-Proof.
-elim/fmap_ind': s s1 s2=>// k v s.
-move/notin_path=>H IH s1 s2; rewrite !disj_ins.
-case/andP; case/andP=>H1 H2; case/andP=>H3 H4.
-rewrite !fcat_sins // => H5.
-apply: IH; first by rewrite H2 H4.
-by apply: cancel_ins H5; rewrite supp_fcat negb_or /= ?H1?H3 H.
-Qed.
+End DisjointUnion.
 
-Lemma fcatKs (s s1 s2 : fmap) : 
-        disj s s1 && disj s s2 -> fcat s s1 = fcat s s2 -> s1 = s2.
-Proof.
-case/andP=>H1 H2. 
-rewrite (fcatC H1) (fcatC H2); apply: fcatsK.
-by rewrite -!(disjC s) H1 H2.
-Qed.  
-
-End DisjointUnion. 
-
-Section EqType. 
+Section EqType.
 Variables (K : ordType) (V : eqType).
 
-Definition feq (s1 s2 : finMap K V) := seq_of s1 == seq_of s2.
+Definition feq (s1 s2 : {fmap K -> V}) := seq_of s1 == seq_of s2.
 
 Lemma feqP : Equality.axiom feq.
 Proof.
-move=>s1 s2; rewrite /feq.
-case: eqP; first by move/fmapE=>->; apply: ReflectT.
-by move=>H; apply: ReflectF; move/fmapE; move/H.
+move=> s1 s2; rewrite /feq; apply: (iffP eqP) => [|->//].
+move: s1 s2 => [s1 Hs1] [s2 Hs2] //= eq_s12.
+by case: _ / eq_s12 in Hs2 *; rewrite [Hs1]bool_irrelevance.
 Qed.
 
-Canonical Structure fmap_eqMixin := EqMixin feqP. 
-Canonical Structure fmap_eqType := EqType (finMap K V) fmap_eqMixin.
+Canonical Structure finmap_eqMixin := EqMixin feqP.
+Canonical Structure finmap_eqType := EqType {fmap K -> V} finmap_eqMixin.
 End EqType.
 
+Delimit Scope fmap_scope with fset.
+Open Scope fmap_scope.
 
+Notation "[ 'fmap' ]" := nilf : fmap_scope.
+Infix "++" := catf : fmap_scope.
+Infix ":~:" := disjf : fmap_scope.
+
+Section FSet.
+Variables (K : ordType).
+Implicit Type s : seq K.
+
+Definition fset s : {fset K} := fmap s (fun _=> tt).
+Notation "u .[+ k ]" := (u.[k <- tt]) : fmap_scope.
+Notation "[ 'fset' k ]" := (fset [::k]) : fmap_scope.
+
+Lemma mem_fset (u : {fset K}) i : (i \in u) = (fnd u i == Some tt).
+Proof.
+by have [/is_fnd [] [->] //|iNu] := boolP (_ \in _); rewrite fnd_default.
+Qed.
+
+Lemma mem_fsetP (u : {fset K}) i : reflect (fnd u i = Some tt) (i \in u).
+Proof. by rewrite mem_fset; apply: eqP. Qed.
+
+Lemma fsetP (u v : {fset K}) : u =i v <-> u = v.
+Proof.
+split => [eq_uv|->//]; apply/fndP => i.
+have := eq_uv i; have [iv iu|iNv iNu] := boolP (i \in v).
+  by rewrite !(mem_fsetP _ _ _).
+by rewrite !fnd_default ?iNv ?iNu.
+Qed.
+
+Lemma fset_rem s k : uniq s -> fset (rem k s) = remf k (fset s).
+Proof.
+by move=> s_uniq; apply/fsetP => i; rewrite ?(mem_fmap, mem_remf) mem_rem_uniq.
+Qed.
+
+Lemma catf1 u k : u ++ [fset k] = u.[+ k].
+Proof.
+apply/fsetP=> i.
+by rewrite mem_catf mem_fmap in_cons in_nil orbF mem_setf orbC.
+Qed.
+
+Lemma add0f k : [fmap].[+ k] = [fset k]. Proof. by apply/fsetP=> i. Qed.
+
+Lemma fset_cat s s' : fset (s ++ s') = fset s ++ fset s'.
+Proof. by apply/fsetP=> i; rewrite !(mem_fmap, mem_catf) mem_cat. Qed.
+
+Lemma fset_cons s k : fset (k :: s) = (fset s).[+ k].
+Proof. by apply/fsetP => i; rewrite !(mem_fmap, mem_setf) in_cons. Qed.
+
+Lemma fset_rcons s k : fset (rcons s k) = (fset s).[+ k].
+Proof.
+by apply/fsetP => i; rewrite !(mem_fmap, mem_setf) mem_rcons in_cons.
+Qed.
+
+Lemma fset_sort s r : fset (sort r s) = fset s.
+Proof. by apply/fsetP => i; rewrite !(mem_fmap, mem_sort). Qed.
+
+Lemma fset_undup s : fset (undup s) = fset s.
+Proof. by apply/fsetP => i; rewrite !(mem_fmap, mem_undup). Qed.
+
+Variable (V : Type).
+Implicit Types (f g : {fmap K -> V}) (k : K) (v : V).
+
+Definition domf f := fset (keys f).
+
+Lemma mem_domf f k : (k \in domf f) = (k \in f).
+Proof. by rewrite mem_fmap. Qed.
+
+Lemma domf_rem f k : domf f.[~k] = (domf f).[~ k].
+Proof. by rewrite /domf keys_rem fset_rem. Qed.
+
+Lemma domf_set f k v : domf f.[k <- v] = (domf f).[+ k].
+Proof. by rewrite /domf keys_set fset_sort fset_undup fset_cons. Qed.
+
+Lemma domf_cat f g : domf (f ++ g) = domf f ++ domf g.
+Proof. by rewrite /domf keys_cat fset_sort fset_undup fset_cat. Qed.
+
+Lemma domf_disj f g : domf f :~: domf g = f :~: g.
+Proof.
+apply/disjfPr/disjfPl => Hfg k; apply: contraTF.
+  by rewrite -mem_domf => /Hfg; rewrite mem_domf => ->.
+by rewrite mem_domf => /Hfg; rewrite mem_domf => ->.
+Qed.
+
+End FSet.
+
+Section KeysInd.
+Variable (K : ordType) (V : Type).
+
+Lemma keys_eq0P {f : {fmap K -> V}} : reflect (f = [fmap]) (keys f == [::]).
+Proof. by apply: (iffP idP) => [|-> //]; case: finmapP. Qed.
+
+Lemma fmap_ind (P : {fmap K -> V} -> Type) :
+  P [fmap] ->
+ (forall (f : {fmap K -> V}) k v,
+    k \notin f -> P f -> P f.[k <- v]) ->
+ forall f, P f.
+Proof.
+move=> Pnil Pset f; have := erefl (keys f).
+elim: (keys f) {-2}f => [|k ks iks] {f} f.
+  by move/eqP; case: (finmapP f).
+case: finmapP => // v k' g eq_f kNg [eqk'k kg].
+rewrite eqk'k in kNg eq_f * => {k' eqk'k}.
+by apply: Pset => //; apply: iks.
+Qed.
+
+End KeysInd.
