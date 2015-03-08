@@ -103,6 +103,12 @@ Notation local_ctx := (seq odef).
 
 Notation def_elem := (None, Srt prop).
 
+Notation ctxs := (evar_map * named_ctx * local_ctx)%type.
+
+Definition get_emap (c : ctxs) : evar_map := c.1.1.
+Definition get_nc (c : ctxs) : named_ctx := c.1.2.
+Definition get_lc (c : ctxs) : local_ctx := c.2.
+
 Fixpoint oget_def (N : named_ctx) (i : ident) : option odef :=
   match N with
   | [::] => None
@@ -140,7 +146,7 @@ Reserved Notation "E '||-*' s '~' c" (at level 40).
 
 Reserved Notation "E '||-' t1 '-->' t2" (at level 40).
 
-Inductive red1 : (evar_map * named_ctx * local_ctx) -> term -> term -> Prop :=
+Inductive red1 : ctxs -> term -> term -> Prop :=
   | beta C M N T : C ||- App (Abs T M) N --> subst N M
   | deltaN E N L i t T :
       oget_def N i = Some (Some t, T) ->
@@ -169,7 +175,7 @@ Inductive conv (E : (evar_map * named_ctx * local_ctx)) (M : term) : term -> Pro
 Notation "E '||-' t '=?=' u" := (conv E t u) (at level 40). 
 
 
-Definition bhas_type (C : (evar_map * named_ctx * local_ctx)) (t1 t2 : term) :=
+Definition bhas_type (C : ctxs) (t1 t2 : term) :=
   let: (E, N, L) := C in
   match t1, t2 with
   | Srt prop, Srt (kind _) => true
@@ -184,25 +190,13 @@ Definition bhas_type (C : (evar_map * named_ctx * local_ctx)) (t1 t2 : term) :=
 
 
 (* TODO: missing acyclic test in evar_map *)
-Inductive has_type : (evar_map * named_ctx * local_ctx) -> term -> type -> Prop :=
-| TBase C t1 t2 : bhas_type C t1 t2 -> has_type C t1 t2
-(*| TAx1 E N L: 
-    (E, N, L) ||- Srt prop ~ Srt (kind 1)
-| TAx2 E N L i j:
-    i <= j -> 
-    (E, N, L) ||- Srt (kind i) ~ Srt (kind j)
-| TVar E N L i:
-    i < size L -> 
-    (E, N, L) ||- Bnd i ~ (nth def_elem L i).2
-| TConst E N L i:
-    i \in map fst N ->
-    (E, N, L) ||- Ref i ~ (get_def def_elem N i).2
-*)
-| TProd1 E N L T U s:
-    (E, N, L) ||- T ~ Srt s -> 
-    (E, N, (None, T) :: L) ||- U ~ Srt prop ->
-    (E, N, L) ||- Op Prod T U ~ Srt prop
-| TProd2 E N L T U i j k:
+Inductive has_type (E : evar_map) (N : named_ctx) (L : local_ctx) (t : term) (T : type) : Prop :=
+| TBase (HT : bhas_type (E, N, L) t T)
+| TProd1 U V s
+    (E1: t = Op Prod U V) (E2: T = Srt prop)
+    (HT: has_type E N L T (Srt s))
+    (HU: has_type E N ((None, T) :: L) U (Srt prop))
+(*| TProd2 E N L T U i j k:
     i <= k -> j <= k ->
     (E, N, L) ||- T ~ Srt (kind i) -> 
     (E, N, (None, T) :: L) ||- U ~ Srt (kind j) ->
@@ -225,6 +219,7 @@ Inductive has_type : (evar_map * named_ctx * local_ctx) -> term -> type -> Prop 
     E ||- t ~ T ->
     E ||- T =?= U ->
     E ||- t ~ U
+
 with has_types : (evar_map * named_ctx * local_ctx) -> seq term -> named_ctx -> Prop :=  
 | CTId E : E ||-* [::] ~ [::]
 | CTAss E x t T T' s N :
@@ -238,34 +233,36 @@ with has_types : (evar_map * named_ctx * local_ctx) -> seq term -> named_ctx -> 
     E ||- t ~ T' ->
     E ||- t =?= t' ->
     E ||-* (t :: s) ~ ((x, (Some t', T)) :: N)
-where "E '||-' t '~' T" := (has_type E t T)
-and "E '||-*' s '~' N" := (has_types E s N).
+*)
+.
+(* where "< E , N , L > '||-' t '~' T" := (has_type E N L t T). *)
+(* and "E '||-*' s '~' N" := (has_types E s N). *)
 
 Definition wfE E := forall k v t, 
   E.[k] = Some v -> 
   (v.(evar_body) = None -> 
-   exists s, (E, v.(evar_ctx), [::]) ||- v.(evar_concl) ~ Srt s) /\ 
+   exists s, has_type E v.(evar_ctx) [::] v.(evar_concl) (Srt s)) /\ 
   (v.(evar_body) = Some t -> 
-   (E, v.(evar_ctx), [::]) ||- t ~ v.(evar_concl)).
+   has_type E v.(evar_ctx) [::] t v.(evar_concl)).
 
 Inductive wfN : evar_map -> named_ctx -> Prop :=
 | WFN0 E : wfN E [::]
 | WFNAss E (N : named_ctx) (x : ident) T s:
     x \notin (map fst N) ->
-    (E, N, [::]) ||- T ~ Srt s ->
+    has_type E N [::] T (Srt s) ->
     wfN E ((x, (None, T)) :: N)
 | WFNDef E (N : named_ctx) (x : ident) t T:
     x \notin (map fst N) ->
-    (E, N, [::]) ||- t ~ T ->
+    has_type E N [::] t T ->
     wfN E ((x, (Some t, T)) :: N).
 
 Inductive wfL : (evar_map * named_ctx) -> local_ctx -> Prop :=
 | WFL0 E N : wfL (E, N) [::] 
 | WFLAss E N L T s: 
-    (E, N, L) ||- T ~ Srt s ->  
+    has_type E N L T (Srt s) ->  
     wfL (E, N) ((None, T) :: L)
 | WFLDef E N L t T: 
-    (E, N, L) ||- t ~ T ->  
+    has_type E N L t T ->  
     wfL (E, N) ((Some t, T) :: L).
 
 Definition WF E N L := wfE E /\ wfN E N /\ wfL (E, N) L.
@@ -275,32 +272,48 @@ Lemma get_def_weak d N i i' e : i != i' ->
 Proof. by move=>H; rewrite {2}/get_def /= (negbTE H). Qed.
 Arguments get_def_weak [_ _ _] i' e _.
 
-Lemma weakeningN E N L t T i V : 
-  i \notin (map fst N) ->
-  (E, N, L) ||- t ~ T ->
-  (E, (i, V) :: N, L) ||- t ~ T.
+Lemma in_not_in (T : eqType) x y (s : seq T) : x \in s -> y \notin s -> x != y.
 Proof.
-  move=>Hi H.
-  induction H. ; subst; try by constructor.
-  - rewrite (get_def_weak i V). apply TConst.
-  - case Hi0: (i0 \in (map fst N)).
-    rewrite /get_def.
-    
-  elim: t=>[s| n l | o t | | ] H.
-  - inversion H; subst; try by constructor.
-    apply (TConv H0 H1).
-Lemma wfL_ref E N L i t T: 
-  WF E N L -> (i, (Some t, T)) \in N -> 
-  (E, N, L) ||- t ~ T.
-Proof.
-  elim: N=>[//| [j [ot' T']] N' IH].
-  move=>H1 H2. move: H2 H1.
-  rewrite inE.
+  elim:s =>// z s IH.
+  rewrite !inE.
   case/orP.
-  - move/eqP. case=><- <- <-.
-    move=>[WFE [WFN WFL]].
-    inversion WFN; subst.
-  move=>H1 H2.
+  - move/eqP=>->.
+    rewrite Bool.negb_orb.
+    by case/andP; rewrite eq_sym.
+  move/IH {IH}=>IH.
+  rewrite Bool.negb_orb.
+  by case/andP=>_; move/IH.
+Qed.
+
+Lemma bhas_type_weakN E N L t1 t2 i V: 
+  i \notin (map fst N) ->
+  bhas_type (E, N, L) t1 t2 ->
+  bhas_type (E, (i, V) :: N, L) t1 t2.
+Proof.
+  elim: t1; try by [].
+  move=>i' H1 /=.
+  case H: (_ \in _); last by [].
+  have ii': i' != i by rewrite (in_not_in H).
+  rewrite -get_def_weak; last by [].
+  by rewrite inE H orbT.
+Qed.
+
+Lemma weakeningN E0 N0 L0 t0 T0 i v : 
+  has_type E0 N0 L0 t0 T0 ->
+  forall Ni : i \notin (map fst N0),
+  has_type E0 ((i, v) :: N0) L0 t0 T0.
+Proof.
+  elim;
+  intros; subst.  
+  - apply: TBase.
+    by apply: bhas_type_weakN.
+  - apply: TProd1; try by [].
+    + by eapply H.
+    by apply: H0.
+
+
+(* UNTIL HERE *)
+
 Theorem progress E t u T : 
   E ||- t ~ T -> 
   E ||- t --> u ->
